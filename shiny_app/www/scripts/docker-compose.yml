@@ -1,0 +1,23 @@
+# From project root: docker compose up
+services:
+  inference:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.inference
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+    environment:
+      - TTS_PROJECT_ROOT=/app
+
+  shiny:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.shiny
+    ports:
+      - "3838:3838"
+    environment:
+      - TTS_INFERENCE_URL=http://inference:8000
+    depends_on:
+      - inference

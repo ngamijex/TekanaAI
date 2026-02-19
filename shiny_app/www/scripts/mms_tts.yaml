@@ -1,0 +1,21 @@
+# Kinyarwanda TTS training config (used by R orchestration + Python training script)
+project_root: "."   # set by R to actual ROOT
+data_processed_dir: "data/processed"
+metadata_csv: "data/processed/metadata.csv"
+checkpoint_dir: "artifacts/checkpoints"
+final_model_dir: "artifacts/final_model"
+sample_rate: 16000
+base_model: "facebook/mms-tts-kin"   # or facebook/mms-tts for multilingual fine-tune
+# Further fine-tune: set to path of existing model to continue training (e.g. artifacts/final_model). Set to null or remove to train from base_model.
+resume_from: "artifacts/final_model"
+# resume_lr: 2.0e-6   # learning rate when resuming (default 2e-6; base run uses 5e-6)
+batch_size: 8
+epochs: 5
+# For CPU: limit samples to fit in target time. Unset or null = use all train data.
+max_train_samples: 280
+eval_sentences:
+  - "Muraho, nagufasha gute uyu munsi?"
+  - "Niba ufite ibibazo bijyanye n'ubuzima bwawe, twagufasha."
+  - "Ni ngombwa ko ubonana umuganga vuba."
+  - "Twabanye nawe kandi tuzakomeza kukwitaho."
+  - "Ushobora kuduhamagara igihe cyose ukeneye ubufasha."

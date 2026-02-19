@@ -1,0 +1,8 @@
+# R Shiny app. Connects to inference service via TTS_INFERENCE_URL.
+FROM rocker/shiny:4.3.2
+RUN R -e "install.packages(c('shiny','httr','jsonlite','base64enc'), repos='https://cloud.r-project.org')"
+WORKDIR /app
+COPY shiny_app/ /app/shiny_app/
+EXPOSE 3838
+ENV TTS_INFERENCE_URL=http://inference:8000
+CMD ["R", "-e", "shiny::runApp('/app/shiny_app', host='0.0.0.0', port=3838)"]

@@ -1,0 +1,42 @@
+# Data — do not push (confidential / large)
+data/
+
+# Model artifacts (large; use GitHub Releases if needed)
+artifacts/
+
+# Generated reports and evaluation outputs
+reports/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+.venv/
+venv/
+env/
+.env
+
+# R
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE / misc
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Optional: uncomment to keep small generated WAVs out of repo
+# *.wav
+# synthesis_output.wav

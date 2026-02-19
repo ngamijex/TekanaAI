@@ -1,0 +1,386 @@
+/* Tekana Kinyarwanda TTS — professional, document-style UI (no gradients, no AI-ish look) */
+
+:root {
+  --ink: #1a1a1a;
+  --ink-light: #444;
+  --paper: #fafafa;
+  --paper-alt: #f0f0f0;
+  --border: #ccc;
+  --border-light: #e0e0e0;
+  --link: #1a5fb4;
+  --link-hover: #0d3d7a;
+  --btn-bg: #1a1a1a;
+  --btn-text: #fff;
+  --success: #0d7d3d;
+  --error: #b31d1d;
+  --radius: 4px;
+  --font-sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-serif: Georgia, "Times New Roman", serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--paper);
+  color: var(--ink);
+  margin: 0;
+  padding: 0;
+  line-height: 1.5;
+  font-size: 15px;
+}
+
+.app-root {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+
+/* ----- About me ----- */
+.about-me {
+  border-bottom: 1px solid var(--border-light);
+  padding-bottom: 24px;
+  margin-bottom: 24px;
+}
+
+.about-me-inner {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.about-photo {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--border);
+}
+
+.about-text h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0 0 4px;
+  color: var(--ink);
+}
+
+.about-text p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--ink-light);
+}
+
+.about-text .about-desc {
+  margin-top: 10px;
+  max-width: 560px;
+  line-height: 1.5;
+  font-size: 0.9rem;
+  color: var(--ink-light);
+}
+
+/* ----- Navbar (tabs) ----- */
+.navbar-default {
+  background: transparent !important;
+  border: none !important;
+  margin-bottom: 20px;
+}
+
+.navbar-default .navbar-nav > li > a {
+  color: var(--ink) !important;
+  font-weight: 500;
+}
+
+.navbar-default .navbar-nav > li > a:hover,
+.navbar-default .navbar-nav > li.active > a {
+  color: var(--link) !important;
+  background: transparent !important;
+}
+
+.navbar-default .navbar-nav > .active > a {
+  border-bottom: 2px solid var(--ink);
+}
+
+/* ----- Writings tab: 2-column academic document ----- */
+.writeup-tab {
+  background: #fff;
+  border: 1px solid var(--border-light);
+  padding: 32px 40px 40px;
+  margin-top: 0;
+}
+
+.writeup-header {
+  margin-bottom: 24px;
+}
+
+.writeup-header h2 {
+  font-family: var(--font-serif);
+  font-size: 1.35rem;
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 0 0 8px;
+  color: var(--ink);
+}
+
+.writeup-header .meta {
+  font-size: 0.9rem;
+  color: var(--ink-light);
+  margin: 0;
+}
+
+.writeup-columns {
+  column-count: 2;
+  column-gap: 36px;
+  column-rule: 1px solid var(--border-light);
+  text-align: justify;
+}
+
+.writeup-columns p {
+  font-family: var(--font-serif);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  margin: 0 0 1em;
+  text-indent: 1.5em;
+}
+
+.writeup-columns p:first-of-type {
+  text-indent: 0;
+}
+
+.writeup-columns strong {
+  font-weight: 600;
+}
+
+.writeup-columns code {
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: 0.88em;
+  background: var(--paper-alt);
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+/* Code boxes for demonstration in write-up */
+.writeup-code-box {
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: 0.85rem;
+  background: var(--paper-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 0.8em 0;
+  overflow-x: auto;
+  text-align: left;
+  break-inside: avoid;
+}
+.writeup-code-box .code-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink-light);
+  margin-bottom: 6px;
+  font-family: var(--font-sans);
+}
+.writeup-code-box pre {
+  margin: 0;
+  white-space: pre;
+}
+
+/* Downloadable script links in write-up */
+.writeup-scripts {
+  margin: 1em 0;
+  break-inside: avoid;
+}
+.writeup-scripts .script-item {
+  margin: 6px 0;
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+}
+.writeup-scripts a.script-download {
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: 0.88rem;
+  color: var(--link);
+  text-decoration: none;
+}
+.writeup-scripts a.script-download:hover {
+  text-decoration: underline;
+}
+
+.writeup-footer {
+  margin-top: 24px !important;
+  text-indent: 0 !important;
+  font-size: 0.9rem !important;
+  color: var(--ink-light);
+}
+
+@media (max-width: 700px) {
+  .writeup-columns {
+    column-count: 1;
+    column-rule: none;
+  }
+  .writeup-tab {
+    padding: 20px 20px 28px;
+  }
+}
+
+/* ----- Model demonstration tab ----- */
+.demo-tab {
+  margin-top: 0;
+}
+
+.demo-intro {
+  color: var(--ink-light);
+  font-size: 0.95rem;
+  margin-bottom: 20px;
+}
+
+.api-hint {
+  font-size: 0.9rem;
+  color: var(--ink-light);
+}
+
+.api-hint code {
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: 0.9em;
+  background: var(--paper-alt);
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  margin-bottom: 20px;
+}
+
+.label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--ink-light);
+  margin-bottom: 8px;
+}
+
+.quick-sentences .label {
+  margin-bottom: 10px;
+}
+
+.quick-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 18px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  background: #fff;
+  color: var(--ink);
+  text-decoration: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.btn:hover {
+  border-color: var(--ink);
+  background: var(--paper-alt);
+}
+
+.btn-primary {
+  background: var(--btn-bg);
+  color: var(--btn-text);
+  border-color: var(--btn-bg);
+}
+
+.btn-primary:hover {
+  background: var(--ink-light);
+  border-color: var(--ink-light);
+  color: var(--btn-text);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-quick {
+  padding: 8px 14px;
+  font-size: 0.88rem;
+}
+
+textarea {
+  width: 100%;
+  min-height: 100px;
+  padding: 12px;
+  font-size: 1rem;
+  font-family: inherit;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--ink);
+  resize: vertical;
+}
+
+textarea::placeholder {
+  color: var(--ink-light);
+}
+
+.demo-options select {
+  max-width: 200px;
+  padding: 8px 12px;
+  font-size: 0.95rem;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--ink);
+}
+
+.badge {
+  display: inline-block;
+  padding: 4px 10px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  border-radius: var(--radius);
+  background: var(--paper-alt);
+  border: 1px solid var(--border);
+  color: var(--ink-light);
+  margin-top: 10px;
+}
+
+.badge.success {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.audio-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.audio-row audio {
+  flex: 1;
+  min-width: 200px;
+  height: 40px;
+}
+
+.error-msg {
+  color: var(--error);
+  font-size: 0.9rem;
+  margin-top: 10px;
+}
+
+.hidden {
+  display: none !important;
+}

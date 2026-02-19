@@ -1,0 +1,14 @@
+# R Plumber TTS inference. Model loaded at startup via reticulate + Python engine.
+FROM rocker/r-ver:4.3.2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY requirements-inference.txt /app/
+RUN pip3 install --break-system-packages -r requirements-inference.txt
+RUN R -e "install.packages(c('plumber','jsonlite','base64enc','reticulate'), repos='https://cloud.r-project.org')"
+COPY inference/ /app/inference/
+COPY artifacts/ /app/artifacts/
+ENV TTS_PROJECT_ROOT=/app
+EXPOSE 8000
+CMD ["Rscript", "/app/inference/run_plumber.R"]
