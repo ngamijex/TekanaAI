@@ -2,6 +2,8 @@
 
 A production-ready **Kinyarwanda TTS** system for the Tekana voice-based AI. It converts text into natural speech using a fine-tuned **VITS** (MMS-TTS) model, with a full pipeline from data preparation and training to inference, a **Shiny** web app for demonstration, and a **REST API** or **Docker** deployment.
 
+**Live demo (deployed Shiny app):** [https://didier-ngamije.shinyapps.io/shiny_app/](https://didier-ngamije.shinyapps.io/shiny_app/) — Writings tab (technical report + downloadable scripts) and Model demonstration tab (synthesise, play, download WAV).
+
 ---
 
 ## Overview
