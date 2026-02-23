@@ -14,55 +14,87 @@ QUICK_SENTENCES <- c(
   "Ushobora kuduhamagara igihe cyose ukeneye ubufasha."
 )
 
-# ----- TTS: load model and define synthesize() in .GlobalEnv (so Run App in RStudio finds it) -----
+# ----- TTS: load model and define synthesize() in .GlobalEnv -----
 .GlobalEnv$tts_load_error <- ""
 .GlobalEnv$synthesize <- function(text, speaker_id = NULL) {
   msg <- get("tts_load_error", envir = .GlobalEnv)
-  stop("TTS not loaded. ", if (nzchar(msg)) msg else "Install reticulate and ensure inference/tts_engine.py exists.")
+  stop(if (nzchar(msg)) msg else "TTS engine failed to load. Check the R console for details.")
 }
-if (requireNamespace("reticulate", quietly = TRUE)) {
-  tryCatch({
-    wd <- getwd()
-    # Try project root: parent of shiny_app, or getwd() if it already contains inference
-    candidates <- c(
-      if (basename(wd) == "shiny_app") normalizePath(file.path(wd, ".."), mustWork = FALSE) else character(0),
-      wd,
-      normalizePath(file.path(wd, ".."), mustWork = FALSE)
+
+.tts_init <- function() {
+  # 1. Check reticulate
+  if (!requireNamespace("reticulate", quietly = TRUE)) {
+    .GlobalEnv$tts_load_error <- "R package 'reticulate' is not installed. Run: install.packages('reticulate')"
+    return(invisible(NULL))
+  }
+
+  # 2. Check Python
+  if (!reticulate::py_available(initialize = TRUE)) {
+    .GlobalEnv$tts_load_error <- paste0(
+      "Python not found. Install Python 3.10+ and run: ",
+      "pip install transformers torch soundfile scipy. ",
+      "Then restart R and re-run the app."
     )
-    tts_path <- NULL
-    ROOT <- NULL
-    for (r in unique(candidates)) {
-      if (is.null(r) || length(r) == 0 || !nzchar(r) || is.na(r)) next
-      r <- as.character(r)[1]
-      p <- file.path(r, "inference", "tts_engine.py")
-      if (file.exists(p)) {
-        tts_path <- normalizePath(p)
-        ROOT <- normalizePath(r)
-        break
-      }
+    return(invisible(NULL))
+  }
+
+  # 3. Find tts_engine.py
+  wd <- getwd()
+  candidates <- unique(c(
+    if (basename(wd) == "shiny_app") normalizePath(file.path(wd, ".."), mustWork = FALSE) else character(0),
+    wd,
+    normalizePath(file.path(wd, ".."), mustWork = FALSE)
+  ))
+  tts_path <- NULL
+  ROOT     <- NULL
+  for (r in candidates) {
+    if (!nzchar(r) || is.na(r)) next
+    p <- file.path(r, "inference", "tts_engine.py")
+    if (file.exists(p)) { tts_path <- normalizePath(p); ROOT <- normalizePath(r); break }
+  }
+  if (is.null(tts_path)) {
+    .GlobalEnv$tts_load_error <- paste0(
+      "inference/tts_engine.py not found. ",
+      "Run the app from the project root: setwd('path/to/TekanaAI'); shiny::runApp('shiny_app'). ",
+      "Searched in: ", paste(candidates, collapse = ", ")
+    )
+    return(invisible(NULL))
+  }
+
+  # 4. Source the Python engine — source_python puts functions in the LOCAL env
+  tryCatch({
+    Sys.setenv(TTS_PROJECT_ROOT = ROOT)
+    # Use a dedicated environment so source_python has a clean namespace to write into
+    tts_env <- new.env(parent = emptyenv())
+    reticulate::source_python(tts_path, envir = tts_env)
+
+    if (!exists("synthesize", envir = tts_env, inherits = FALSE)) {
+      stop("synthesize() not found in tts_engine.py after source_python.")
     }
-    if (is.null(tts_path) || !file.exists(tts_path)) {
-      .GlobalEnv$tts_load_error <- paste0("inference/tts_engine.py not found. Current dir: ", wd, ". Tried: ", paste(candidates, collapse = ", "))
-    } else {
-      Sys.setenv(TTS_PROJECT_ROOT = ROOT)
-      reticulate::source_python(tts_path)
-      py_synth <- get("synthesize", envir = sys.frame(0))
-      if (is.null(py_synth)) py_synth <- get("synthesize", envir = .GlobalEnv)
-      .GlobalEnv$synthesize <- function(text, speaker_id = NULL) {
-        res <- py_synth(text, speaker_id)
-        wav <- res[[1]]
-        if (inherits(wav, "python.builtin.bytes")) wav <- reticulate::py_to_r(wav)
-        list(wav_base64 = base64enc::base64encode(wav), latency_ms = as.numeric(res[[2]]))
-      }
-      .GlobalEnv$tts_load_error <- ""
+    py_synth <- tts_env$synthesize
+
+    .GlobalEnv$synthesize <- function(text, speaker_id = NULL) {
+      res <- py_synth(text, speaker_id)
+      wav <- res[[1]]
+      if (inherits(wav, "python.builtin.bytes")) wav <- reticulate::py_to_r(wav)
+      list(wav_base64 = base64enc::base64encode(wav), latency_ms = as.numeric(res[[2]]))
     }
+    .GlobalEnv$tts_load_error <- ""
+    message("TTS engine ready. Project root: ", ROOT)
   }, error = function(e) {
-    .GlobalEnv$tts_load_error <- conditionMessage(e)
-    .GlobalEnv$synthesize <- function(text, speaker_id = NULL) stop("TTS load failed: ", conditionMessage(e))
+    msg <- conditionMessage(e)
+    .GlobalEnv$tts_load_error <- paste0(
+      "Python engine failed to load: ", msg, ". ",
+      "Make sure these packages are installed in your Python env: ",
+      "transformers torch soundfile scipy"
+    )
+    .GlobalEnv$synthesize <- function(text, speaker_id = NULL) {
+      stop(get("tts_load_error", envir = .GlobalEnv))
+    }
   })
-} else {
-  .GlobalEnv$tts_load_error <- "Install reticulate: install.packages('reticulate')"
 }
+
+.tts_init()
 
 # Writings tab: detailed content from writings_content.R (methodology, training, evaluation, formulas)
 writings_html <- function() writings_html_content()
@@ -109,6 +141,7 @@ ui <- fluidPage(
             })
           )
         ),
+        uiOutput("tts_status_ui"),
         div(class = "card",
           span(class = "label", "Text to synthesize"),
           textAreaInput(
@@ -186,6 +219,16 @@ server <- function(input, output, session) {
       latency_ms(result$latency_ms)
     }
   }
+
+  output$tts_status_ui <- renderUI({
+    err <- get("tts_load_error", envir = .GlobalEnv)
+    if (!nzchar(err)) return(NULL)
+    div(class = "error-msg",
+        style = "margin-bottom:12px;",
+        tags$strong("TTS setup issue: "),
+        err
+    )
+  })
 
   output$error_msg_ui <- renderUI({
     msg <- error_msg()
