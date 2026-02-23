@@ -10,8 +10,21 @@ from pathlib import Path
 
 _model = None
 
-# Pretrained Kinyarwanda MMS-TTS model (or path to fine-tuned)
+# Pretrained Kinyarwanda MMS-TTS model (fallback when no fine-tuned weights found)
 DEFAULT_MODEL = "facebook/mms-tts-kin"
+
+# Weight file names that transformers recognises
+_WEIGHT_FILES = (
+    "model.safetensors",
+    "pytorch_model.bin",
+    "tf_model.h5",
+    "flax_model.msgpack",
+)
+
+def _has_weights(model_dir):
+    """Return True only if the directory contains actual model weight files."""
+    p = Path(model_dir)
+    return any((p / f).exists() for f in _WEIGHT_FILES)
 
 def get_model_dir():
     root = os.environ.get("TTS_PROJECT_ROOT")
@@ -25,10 +38,25 @@ def load_model():
         return
     model_dir = get_model_dir()
     model_path = os.environ.get("TTS_MODEL_PATH", DEFAULT_MODEL)
-    # Use pretrained if env set (e.g. when fine-tuned model outputs silence), else use local if present
     use_pretrained = os.environ.get("TTS_USE_PRETRAINED", "").lower() in ("1", "true", "yes")
-    if not use_pretrained and model_dir.exists() and (model_dir / "config.json").exists():
+    # Only use local directory if it has actual weight files; otherwise fall back to pretrained HF model
+    if (
+        not use_pretrained
+        and model_dir.exists()
+        and (model_dir / "config.json").exists()
+        and _has_weights(model_dir)
+    ):
         model_path = str(model_dir)
+        print(f"[TTS] Loading fine-tuned model from: {model_path}", flush=True)
+    else:
+        if not use_pretrained and model_dir.exists() and not _has_weights(model_dir):
+            print(
+                f"[TTS] No weight files found in {model_dir}. "
+                "Falling back to pretrained facebook/mms-tts-kin.",
+                flush=True,
+            )
+        else:
+            print(f"[TTS] Loading pretrained model: {model_path}", flush=True)
     from transformers import pipeline
     import torch
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -41,6 +69,7 @@ def load_model():
         _model.model.config, "sampling_rate",
         getattr(_model.model.config, "sample_rate", 16000)
     )
+    print(f"[TTS] Model ready. Sampling rate: {_model._sampling_rate} Hz", flush=True)
 
 def _bandpass_speech(audio, sr, low_hz=80, high_hz=7000, order=4):
     """Keep only the speech band: removes rumble and hiss so voice sounds clearer and closer."""

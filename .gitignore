@@ -38,6 +38,9 @@ Thumbs.db
 *.swo
 *~
 
+# Local files
+submission_email.txt
+
 # Optional: uncomment to keep small generated WAVs out of repo
 # *.wav
 # synthesis_output.wav

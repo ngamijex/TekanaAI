@@ -53,10 +53,28 @@ def main():
             meta = meta.sample(n=max_samples, random_state=42).reset_index(drop=True)
             print(f"Subsampled to {len(meta)} train samples (max_train_samples={max_samples})", flush=True)
 
-    load_from = resume_path if (resume_path and resume_path.exists() and (resume_path / "config.json").exists()) else None
+    def _has_weights(p):
+        for f in ("model.safetensors", "pytorch_model.bin", "tf_model.h5", "flax_model.msgpack"):
+            if (p / f).exists():
+                return True
+        return False
+
+    # Only resume if the directory has actual weight files, not just config/tokenizer
+    load_from = (
+        resume_path
+        if (
+            resume_path
+            and resume_path.exists()
+            and (resume_path / "config.json").exists()
+            and _has_weights(resume_path)
+        )
+        else None
+    )
     if load_from:
         print(f"Resuming from: {load_from}", flush=True)
     else:
+        if resume_path and resume_path.exists() and not _has_weights(resume_path):
+            print(f"resume_from path has no weights ({resume_path}). Starting from base model instead.", flush=True)
         print(f"Base model: {base_model}", flush=True)
     print(f"Fine-tuning: {len(meta)} samples, {epochs} epochs, batch_size={batch_size}", flush=True)
     print(f"Output: {final_dir}", flush=True)
