@@ -175,8 +175,8 @@ ui <- fluidPage(
             selectInput(
               inputId = "speaker_id",
               label = NULL,
-              choices = c("Default" = "", "Speaker 1" = "0", "Speaker 2" = "1", "Speaker 3" = "2"),
-              selected = ""
+            choices = c("Speaker 1" = "0", "Speaker 2" = "1", "Speaker 3" = "2"),
+            selected = "0"
             )
           ),
           actionButton("generate", "Generate speech", class = "btn btn-primary"),
