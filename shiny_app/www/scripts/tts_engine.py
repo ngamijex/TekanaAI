@@ -41,7 +41,13 @@ def _has_weights(model_dir: Path) -> bool:
 def get_model_dir() -> Path:
     root = os.environ.get("TTS_PROJECT_ROOT")
     if not root:
-        root = Path(__file__).resolve().parents[1]
+        # __file__ is not defined when loaded via reticulate::source_python();
+        # TTS_PROJECT_ROOT is always set by app.R before sourcing, so this
+        # fallback only matters when running the script directly from a terminal.
+        try:
+            root = Path(__file__).resolve().parents[1]
+        except NameError:
+            root = Path.cwd()
     return Path(root) / "artifacts" / "final_model"
 
 
