@@ -64,18 +64,15 @@ QUICK_SENTENCES <- c(
   message("[TTS] engine  : ", tts_path)
   message("[TTS] root    : ", ROOT)
 
-  # 3. Ensure required Python packages are installed
-  py_pkgs <- c("transformers", "torch", "soundfile", "scipy", "numpy")
-  missing_pkgs <- Filter(function(pkg) {
-    !reticulate::py_module_available(pkg)
-  }, py_pkgs)
-
+  # 3. Check that the required Python packages are available (installed at deploy time via requirements.txt)
+  required_pkgs <- c("transformers", "torch", "soundfile", "scipy", "numpy")
+  missing_pkgs  <- Filter(Negate(reticulate::py_module_available), required_pkgs)
   if (length(missing_pkgs) > 0) {
-    message("[TTS] Installing missing Python packages: ", paste(missing_pkgs, collapse = ", "))
-    tryCatch(
-      reticulate::py_install(missing_pkgs, pip = TRUE),
-      error = function(e) message("[TTS] pip install warning: ", conditionMessage(e))
+    .GlobalEnv$tts_load_error <- paste0(
+      "Missing Python packages: ", paste(missing_pkgs, collapse = ", "), ". ",
+      "Run locally: pip install transformers torch soundfile scipy numpy"
     )
+    return(invisible(NULL))
   }
 
   # 4. Source the engine and wire up synthesize()
