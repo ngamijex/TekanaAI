@@ -22,74 +22,58 @@ QUICK_SENTENCES <- c(
 }
 
 .tts_init <- function() {
-  # 1. Check reticulate
+
+  # 1. Check reticulate package
   if (!requireNamespace("reticulate", quietly = TRUE)) {
     .GlobalEnv$tts_load_error <- "R package 'reticulate' is not installed. Run: install.packages('reticulate')"
     return(invisible(NULL))
   }
 
-  # 2. Check Python
-  if (!reticulate::py_available(initialize = TRUE)) {
-    .GlobalEnv$tts_load_error <- paste0(
-      "Python not found. Install Python 3.10+ and run: ",
-      "pip install transformers torch soundfile scipy. ",
-      "Then restart R and re-run the app."
-    )
-    return(invisible(NULL))
-  }
-
-  # 3. Find tts_engine.py
-  # Search order:
-  #   (a) same directory as app.R        — works when deployed (shinyapps.io / Connect)
-  #   (b) inference/ under project root  — works when running locally from project root
-  #   (c) inference/ one level up        — works when wd is already shiny_app/
-  wd <- getwd()
-  app_dir <- if (file.exists(file.path(wd, "app.R"))) wd
-             else normalizePath(file.path(wd, ".."), mustWork = FALSE)
+  # 2. Find tts_engine.py — check every plausible location
+  wd  <- getwd()
+  par <- tryCatch(normalizePath(file.path(wd, ".."), mustWork = FALSE), error = function(e) wd)
 
   search_paths <- unique(c(
-    # deployed: tts_engine.py sits next to app.R
-    file.path(app_dir, "tts_engine.py"),
-    # local dev: project root contains inference/
-    file.path(wd, "inference", "tts_engine.py"),
-    file.path(app_dir, "inference", "tts_engine.py"),
-    file.path(normalizePath(file.path(wd, ".."), mustWork = FALSE), "inference", "tts_engine.py")
+    file.path(wd,  "tts_engine.py"),               # deployed: same dir as app.R
+    file.path(wd,  "inference", "tts_engine.py"),  # local: wd IS project root
+    file.path(par, "tts_engine.py"),               # one level up flat
+    file.path(par, "inference", "tts_engine.py")   # local: wd is shiny_app/
   ))
 
   tts_path <- NULL
   ROOT     <- NULL
   for (p in search_paths) {
-    if (!nzchar(p) || is.na(p)) next
+    if (!is.character(p) || !nzchar(p) || is.na(p)) next
     if (file.exists(p)) {
       tts_path <- normalizePath(p)
-      # Project root = directory that contains tts_engine.py OR its parent (if in inference/)
-      ROOT <- normalizePath(dirname(p))
-      if (basename(ROOT) == "inference") ROOT <- normalizePath(file.path(ROOT, ".."))
+      ROOT     <- normalizePath(dirname(tts_path))
+      if (basename(ROOT) == "inference")
+        ROOT <- normalizePath(file.path(ROOT, ".."))
       break
     }
   }
+
   if (is.null(tts_path)) {
     .GlobalEnv$tts_load_error <- paste0(
-      "tts_engine.py not found. ",
-      "For local use: run from project root with setwd('path/to/TekanaAI'); shiny::runApp('shiny_app'). ",
-      "For deployment: ensure tts_engine.py is in the shiny_app/ folder. ",
-      "Searched: ", paste(search_paths, collapse = ", ")
+      "tts_engine.py not found. Searched: ",
+      paste(search_paths, collapse = " | ")
     )
     return(invisible(NULL))
   }
 
-  # 4. Source the Python engine — source_python puts functions in the LOCAL env
+  message("[TTS] engine  : ", tts_path)
+  message("[TTS] root    : ", ROOT)
+
+  # 3. Source the engine and wire up synthesize()
   tryCatch({
     Sys.setenv(TTS_PROJECT_ROOT = ROOT)
-    message("TTS: engine path = ", tts_path)
-    message("TTS: project root = ", ROOT)
-    # Use a dedicated environment so source_python has a clean namespace to write into
-    tts_env <- new.env(parent = emptyenv())
+
+    tts_env <- new.env(parent = globalenv())
     reticulate::source_python(tts_path, envir = tts_env)
 
-    if (!exists("synthesize", envir = tts_env, inherits = FALSE)) {
+    if (!exists("synthesize", envir = tts_env, inherits = FALSE))
       stop("synthesize() not found in tts_engine.py after source_python.")
-    }
+
     py_synth <- tts_env$synthesize
 
     .GlobalEnv$synthesize <- function(text, speaker_id = NULL) {
@@ -99,17 +83,15 @@ QUICK_SENTENCES <- c(
       list(wav_base64 = base64enc::base64encode(wav), latency_ms = as.numeric(res[[2]]))
     }
     .GlobalEnv$tts_load_error <- ""
-    message("TTS engine ready. Project root: ", ROOT)
+    message("[TTS] ready.")
+
   }, error = function(e) {
-    msg <- conditionMessage(e)
     .GlobalEnv$tts_load_error <- paste0(
-      "Python engine failed to load: ", msg, ". ",
-      "Make sure these packages are installed in your Python env: ",
-      "transformers torch soundfile scipy"
+      "Python engine error: ", conditionMessage(e), ". ",
+      "Required Python packages: transformers torch soundfile scipy"
     )
-    .GlobalEnv$synthesize <- function(text, speaker_id = NULL) {
+    .GlobalEnv$synthesize <- function(text, speaker_id = NULL)
       stop(get("tts_load_error", envir = .GlobalEnv))
-    }
   })
 }
 
