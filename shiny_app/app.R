@@ -39,24 +39,41 @@ QUICK_SENTENCES <- c(
   }
 
   # 3. Find tts_engine.py
+  # Search order:
+  #   (a) same directory as app.R        — works when deployed (shinyapps.io / Connect)
+  #   (b) inference/ under project root  — works when running locally from project root
+  #   (c) inference/ one level up        — works when wd is already shiny_app/
   wd <- getwd()
-  candidates <- unique(c(
-    if (basename(wd) == "shiny_app") normalizePath(file.path(wd, ".."), mustWork = FALSE) else character(0),
-    wd,
-    normalizePath(file.path(wd, ".."), mustWork = FALSE)
+  app_dir <- if (file.exists(file.path(wd, "app.R"))) wd
+             else normalizePath(file.path(wd, ".."), mustWork = FALSE)
+
+  search_paths <- unique(c(
+    # deployed: tts_engine.py sits next to app.R
+    file.path(app_dir, "tts_engine.py"),
+    # local dev: project root contains inference/
+    file.path(wd, "inference", "tts_engine.py"),
+    file.path(app_dir, "inference", "tts_engine.py"),
+    file.path(normalizePath(file.path(wd, ".."), mustWork = FALSE), "inference", "tts_engine.py")
   ))
+
   tts_path <- NULL
   ROOT     <- NULL
-  for (r in candidates) {
-    if (!nzchar(r) || is.na(r)) next
-    p <- file.path(r, "inference", "tts_engine.py")
-    if (file.exists(p)) { tts_path <- normalizePath(p); ROOT <- normalizePath(r); break }
+  for (p in search_paths) {
+    if (!nzchar(p) || is.na(p)) next
+    if (file.exists(p)) {
+      tts_path <- normalizePath(p)
+      # Project root = directory that contains tts_engine.py OR its parent (if in inference/)
+      ROOT <- normalizePath(dirname(p))
+      if (basename(ROOT) == "inference") ROOT <- normalizePath(file.path(ROOT, ".."))
+      break
+    }
   }
   if (is.null(tts_path)) {
     .GlobalEnv$tts_load_error <- paste0(
-      "inference/tts_engine.py not found. ",
-      "Run the app from the project root: setwd('path/to/TekanaAI'); shiny::runApp('shiny_app'). ",
-      "Searched in: ", paste(candidates, collapse = ", ")
+      "tts_engine.py not found. ",
+      "For local use: run from project root with setwd('path/to/TekanaAI'); shiny::runApp('shiny_app'). ",
+      "For deployment: ensure tts_engine.py is in the shiny_app/ folder. ",
+      "Searched: ", paste(search_paths, collapse = ", ")
     )
     return(invisible(NULL))
   }
@@ -64,6 +81,8 @@ QUICK_SENTENCES <- c(
   # 4. Source the Python engine — source_python puts functions in the LOCAL env
   tryCatch({
     Sys.setenv(TTS_PROJECT_ROOT = ROOT)
+    message("TTS: engine path = ", tts_path)
+    message("TTS: project root = ", ROOT)
     # Use a dedicated environment so source_python has a clean namespace to write into
     tts_env <- new.env(parent = emptyenv())
     reticulate::source_python(tts_path, envir = tts_env)
