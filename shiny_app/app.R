@@ -64,7 +64,21 @@ QUICK_SENTENCES <- c(
   message("[TTS] engine  : ", tts_path)
   message("[TTS] root    : ", ROOT)
 
-  # 3. Source the engine and wire up synthesize()
+  # 3. Ensure required Python packages are installed
+  py_pkgs <- c("transformers", "torch", "soundfile", "scipy", "numpy")
+  missing_pkgs <- Filter(function(pkg) {
+    !reticulate::py_module_available(pkg)
+  }, py_pkgs)
+
+  if (length(missing_pkgs) > 0) {
+    message("[TTS] Installing missing Python packages: ", paste(missing_pkgs, collapse = ", "))
+    tryCatch(
+      reticulate::py_install(missing_pkgs, pip = TRUE),
+      error = function(e) message("[TTS] pip install warning: ", conditionMessage(e))
+    )
+  }
+
+  # 4. Source the engine and wire up synthesize()
   tryCatch({
     Sys.setenv(TTS_PROJECT_ROOT = ROOT)
 
