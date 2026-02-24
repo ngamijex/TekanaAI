@@ -1,0 +1,593 @@
+---
+title: "Kinyarwanda Text-to-Speech for Tekana — Full Technical Report"
+subtitle: "A step-by-step narrative of every decision, formula, and result"
+author: "Didier Ngamije — Data Scientist"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    number_sections: true
+    css: report_style.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+---
+
+> **How to read this document.** This report tells the full story of the project in first-person narrative — what I was given, every decision I made, every number behind it, and every problem I hit and solved. Technical terms, formulas, and code snippets are woven into the story so that any engineer or data scientist can reproduce the work from this document alone.
+
+---
+
+# The Problem I Was Given
+
+The Tekana system answers phone calls from young people in Rwanda seeking guidance on sexual and mental health. Two components already existed: a **speech-to-text** module that converts the caller's voice into text, and an **AI response generator** that produces a helpful text reply. What was missing was the final step — turning that text reply back into speech.
+
+Without this last piece, Tekana was silent. My task was to build the voice.
+
+The constraints were concrete and non-negotiable:
+
+| Constraint | Value |
+|---|---|
+| Inference latency (short sentence, ~10 words) | **< 800 ms** |
+| Model size on disk (ideal) | **< 200 MB** |
+| Model size on disk (hard limit) | **< 1 GB** |
+| User voice data to external APIs | **Not allowed** |
+| Available training data | **~14 hours of Kinyarwanda speech** |
+| Training hardware | **CPU only** |
+
+Kinyarwanda is spoken by more than 12 million people, yet it is poorly supported by commercial TTS systems. For a health support line, a robotic or foreign-sounding voice would erode the caller's trust. Quality had to be good enough to be understandable and natural to a Rwandan listener.
+
+---
+
+# Choosing the Model
+
+## What I evaluated
+
+The first decision was the most architectural: which TTS approach to use. I considered four options seriously.
+
+**Option 1 — Piper TTS** is a lightweight ONNX-based system that runs very fast on CPU. It had no existing Kinyarwanda checkpoint, so I would have needed to train from scratch — a significant risk given the CPU constraint and limited data.
+
+**Option 2 — Coqui TTS** (now community-maintained) is flexible and well-documented. Like Piper, no Kinyarwanda checkpoint existed. Training VITS or GlowTTS from scratch on 14 hours of data on CPU would take weeks.
+
+**Option 3 — VITS from scratch** using PyTorch. This gives maximum control but requires far more data and compute than available. Training VITS from scratch typically requires hundreds of hours of speech and GPU infrastructure.
+
+**Option 4 — facebook/mms-tts-kin** (the MMS project, Meta AI Research). The Massively Multilingual Speech project includes a VITS model pre-trained specifically for Kinyarwanda. It is available on Hugging Face, integrates with the `transformers` library, and has a compact footprint.
+
+## Why I chose MMS-TTS
+
+I chose `facebook/mms-tts-kin` for three converging reasons. First, it already speaks Kinyarwanda — the pretrained checkpoint had learned the phonetics, prosody, and vocabulary of the language. I was fine-tuning an existing voice rather than building one from nothing. Second, the model fits within the size constraint. Third, it integrates directly with the Hugging Face `transformers` pipeline, meaning the entire inference stack is reproducible with standard open-source tools and no proprietary APIs.
+
+## The architecture: VITS
+
+VITS (Variational Inference with adversarial learning for end-to-end Text-to-Speech) is the underlying model. Understanding its architecture is essential for understanding every training decision I made.
+
+VITS is an **end-to-end** model: it maps raw text directly to a waveform in a single forward pass, with no intermediate mel-spectrogram prediction step exposed to the user. Internally, it operates as a **conditional variational autoencoder (cVAE)** combined with **normalising flows** and **adversarial training**.
+
+The data flow is:
+
+```
+Text tokens  →  Text Encoder  →  Duration Predictor  →  Prior distribution
+                                                          ↓
+                                                    Normalising Flow
+                                                          ↓
+                                              Posterior Encoder (cVAE)
+                                                          ↓
+                                              HiFi-GAN Decoder → Waveform
+```
+
+The **text encoder** has 6 Transformer layers, hidden size 192, 2 attention heads, feed-forward dim 768, kernel size 3. It converts token IDs into a sequence of hidden representations.
+
+The **duration predictor** determines how long each phoneme should last. It uses a stochastic flow-based model with 4 flows and 10 bins (`duration_predictor_flow_bins = 10`), tail bound 5.0.
+
+The **posterior encoder** uses 16 WaveNet layers (`posterior_encoder_num_wavenet_layers = 16`) to map the target waveform into the latent space.
+
+The **prior encoder** (normalising flow) uses 4 flows (`prior_encoder_num_flows = 4`) with 4 WaveNet layers each.
+
+The **HiFi-GAN decoder** upsamples the latent representation to a waveform using transposed convolutions:
+
+| Parameter | Value |
+|---|---|
+| Upsample rates | [8, 8, 2, 2] |
+| Upsample kernel sizes | [16, 16, 4, 4] |
+| Initial channel | 512 |
+| Resblock kernel sizes | [3, 7, 11] |
+| Resblock dilation sizes | [[1,3,5], [1,3,5], [1,3,5]] |
+
+Total upsampling factor: 8 × 8 × 2 × 2 = **256**. At a latent frame rate derived from hop_length=256, this produces a waveform at **16,000 Hz** (16 kHz).
+
+Two stochastic noise parameters control output variation:
+
+- `noise_scale = 0.667` (default) — noise injected into the posterior during synthesis
+- `noise_scale_duration = 0.8` (default) — noise injected into the duration predictor
+
+Higher values produce more varied, natural-sounding speech but also more audible noise. I will return to this when discussing audio quality fixes.
+
+The vocabulary size for Kinyarwanda is **44 tokens**. There is **1 speaker** in the fine-tuned model (single averaged voice, `num_speakers = 1`, `speaker_embedding_size = 0`).
+
+---
+
+# Preparing the Data
+
+## Loading the dataset
+
+The dataset was provided as Hugging Face parquet files with three pre-defined splits: `train`, `validation`, and `test`. Each row had four fields:
+
+| Column | Description |
+|---|---|
+| `audio` | Raw audio bytes |
+| `txt` | Ground-truth Kinyarwanda transcription |
+| `speaker_id` | Which of the three speakers (0, 1, 2) |
+| `split` | train / validation / test |
+
+I wrote a Python script (`scripts/data_pipeline/decode_parquet_to_wav.py`) using `pyarrow` and `soundfile` to decode each audio clip to a **16 kHz mono WAV file**. The output was written to `data/raw_loaded/wav/` and a metadata CSV (`data/raw_loaded/metadata.csv`) was generated with columns: `path`, `text`, `speaker_id`, `split`, `duration_sec`.
+
+## Auditing the dataset
+
+Before cleaning, I ran an audit (R script `02_audit_report.R`) to understand what I had. Key findings written to `reports/dataset_report.json`:
+
+- **Total duration**: approximately 14 hours
+- **Three speakers** across train/validation/test splits
+- **Clip length distribution**: varied, some clips too short (< 2 s) or too long (> 12 s)
+- **Text length**: varied from single words to multi-sentence passages
+
+## Cleaning and exporting
+
+Three cleaning steps were applied in sequence (`03_clean_export.R`):
+
+### Step 1 — Silence trimming
+
+For each clip I identified the first and last sample whose absolute magnitude exceeded a threshold of **0.01**. I kept only the segment between those two points, discarding leading and trailing silence. This prevented the model from learning to generate silence as part of its output timing.
+
+### Step 2 — Loudness normalisation
+
+Target loudness: **−23 LUFS** (broadcast standard), approximated via RMS scaling.
+
+The formulas:
+
+$$\text{target\_RMS} = 10^{\frac{-23}{20}} \times 0.1$$
+
+$$\alpha = \frac{\text{target\_RMS}}{\text{RMS}(x)}, \quad \text{where } \text{RMS}(x) = \sqrt{\frac{1}{N}\sum_{i=1}^{N} x_i^2}$$
+
+$$x_{\text{normalised}} = \text{clip}(\alpha \cdot x, -1, 1)$$
+
+All clips were scaled to approximately the same perceived loudness before training, so the model did not learn different volume levels for different speakers or conditions.
+
+### Step 3 — Duration filter
+
+Clips shorter than **2 seconds** were discarded (too little speech to learn from; also our training batch requires a minimum of 1,600 samples ≈ 0.1 s, but short clips produce unstable gradients). Clips longer than **12 seconds** were also discarded (memory pressure on CPU and risk of gradient explosion).
+
+The cleaned WAVs and updated metadata were written to `data/processed/wav/` and `data/processed/metadata.csv`.
+
+All three steps were orchestrated by the master pipeline: `Rscript run_pipeline.R` (steps 1–3).
+
+---
+
+# Fine-Tuning the Model
+
+## Setup
+
+Fine-tuning was done in Python using PyTorch and the Hugging Face `transformers` library. The configuration was stored in `config/mms_tts.yaml` to ensure full reproducibility:
+
+```yaml
+base_model: "facebook/mms-tts-kin"
+epochs: 5
+batch_size: 8
+max_train_samples: 280
+learning_rate: 5.0e-6
+resume_lr: 2.0e-6
+resume_from: "artifacts/final_model"
+sample_rate: 16000
+```
+
+I loaded `VitsModel` and `AutoTokenizer` from `facebook/mms-tts-kin` as the starting point. The model was moved to CPU (`device = "cpu"`) since no GPU was available.
+
+## The loss functions
+
+The training objective was to minimise a **weighted sum of two losses** computed on each batch.
+
+### Loss 1 — Waveform loss (L1)
+
+Let:
+
+- $x$ = input text (token IDs)  
+- $y$ = target waveform (float32, mono, 16 kHz, from processed data)  
+- $\hat{y} = f_\theta(x)$ = model output waveform  
+- $\Omega$ = set of sample indices after cropping both to $\min(\text{len}(\hat{y}), \text{len}(y))$
+
+$$\mathcal{L}_{\text{wav}} = \frac{1}{|\Omega|} \sum_{i \in \Omega} |\hat{y}_i - y_i|$$
+
+This is the **mean absolute error (MAE / L1 norm)** over aligned samples. L1 was preferred over L2 because it is more robust to occasional large errors (such as silence padding in the target).
+
+### Loss 2 — Mel-spectrogram loss
+
+Computing loss directly on waveforms is difficult because a small phase shift produces a large sample-level error even if the sounds are perceptually identical. The mel-spectrogram loss operates in the perceptual frequency domain, which is much more stable.
+
+The transform parameters:
+
+| Parameter | Value |
+|---|---|
+| n_fft | 1024 |
+| hop_length | 256 |
+| win_length | 1024 |
+| n_mels | 80 |
+| f_min | 0 Hz |
+| f_max | 8000 Hz |
+
+Let $M(\cdot)$ denote the mel-spectrogram transform. Then:
+
+$$M_g = \log\!\left(\max\!\left(M(\hat{y}),\, \varepsilon\right)\right), \quad M_t = \log\!\left(\max\!\left(M(y),\, \varepsilon\right)\right), \quad \varepsilon = 10^{-5}$$
+
+The log is taken to convert to a perceptual (dB-like) scale. Then:
+
+$$\mathcal{L}_{\text{mel}} = \frac{1}{F \times T} \sum_{f=1}^{F} \sum_{t=1}^{T} \left|M_g(f,t) - M_t(f,t)\right|$$
+
+where $F = 80$ (mel bands) and $T$ is the number of time frames.
+
+### Total loss
+
+$$\mathcal{L} = \mathcal{L}_{\text{wav}} + \lambda_{\text{mel}} \cdot \mathcal{L}_{\text{mel}}, \quad \lambda_{\text{mel}} = 2.0$$
+
+The weight $\lambda_{\text{mel}} = 2.0$ was chosen because the mel loss operates on log-mel scale and is typically larger in magnitude than the waveform loss. The higher weight gives it proportionally stronger influence on the gradient, which drives stable frequency-domain alignment. The waveform loss then refines the sample-level output.
+
+## The optimiser: AdamW
+
+I used **AdamW** (Adam with decoupled weight decay), the standard choice for fine-tuning pre-trained transformer-based models.
+
+**Initial learning rate**: $\eta = 5 \times 10^{-6}$  
+**Learning rate when resuming**: $\eta = 2 \times 10^{-6}$ (lower to avoid overshooting an already partially-trained model)  
+**Weight decay**: $\lambda = 0.01$  
+**$\beta_1 = 0.9$, $\beta_2 = 0.999$, $\varepsilon = 10^{-8}$**
+
+The update rule:
+
+$$m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$$
+$$v_t = \beta_2 v_{t-1} + (1 - \beta_2) g_t^2$$
+$$\theta_t = \theta_{t-1} - \eta_t \left(\frac{m_t}{\sqrt{v_t} + \varepsilon} + \lambda \theta_{t-1}\right)$$
+
+where $g_t = \nabla_\theta \mathcal{L}$ is the gradient at step $t$.
+
+## Learning rate schedule: cosine annealing
+
+Rather than a fixed learning rate, I used **cosine annealing** to smoothly decay the learning rate from $\eta_{\max}$ to $\eta_{\min}$ over the full training:
+
+$$\eta_t = \eta_{\min} + \frac{1}{2}(\eta_{\max} - \eta_{\min})\left(1 + \cos\!\left(\frac{\pi t}{T_{\text{total}}}\right)\right)$$
+
+where:
+
+- $T_{\text{total}} = \text{epochs} \times \text{steps\_per\_epoch}$ = total number of optimiser steps  
+- $\eta_{\min} = 10^{-6}$ (floor)  
+- $t$ = current step index
+
+Cosine annealing prevents the learning rate from jumping between a large and a small value; it provides a smooth decay that allows the model to settle into a good local minimum in the final epochs.
+
+## Gradient clipping
+
+To prevent exploding gradients (a real risk when fine-tuning a large model on limited CPU-computed gradients):
+
+$$\|g\|_2 \leq 1.0$$
+
+If the L2 norm of the gradient vector exceeds 1.0, all gradients are rescaled so that $\|g\|_2 = 1.0$.
+
+## The CPU constraint and the max_train_samples trade-off
+
+Training on CPU meant each batch took approximately **80–100 seconds** of wall-clock time. With the full training set:
+
+- ~3,700 training samples after cleaning  
+- Batch size = 8  
+- Steps per epoch = ⌊3,700 / 8⌋ = **462 batches**  
+- Time per epoch = 462 × 90 s ≈ **11.5 hours**  
+- 50 epochs = ~575 hours ≈ **24 days**
+
+This was completely infeasible. I introduced the `max_train_samples = 280` parameter:
+
+- 280 samples, batch size 8 → **35 batches per epoch**  
+- Time per epoch = 35 × 90 s ≈ **52 minutes**  
+- 5 epochs ≈ **4–5 hours total**
+
+This is an explicit, documented trade-off: I exchanged *full data, single epoch* for *subset, multiple epochs*, so the model sees repeated passes and learns the target distribution rather than seeing each example only once. It is not the same as full training, but it was the best achievable under the hardware constraint.
+
+## What was saved
+
+At the end of each epoch, if the epoch-average loss improved, the model was saved to `artifacts/final_model` using `model.save_pretrained()` and `tokenizer.save_pretrained()`. Every 5 epochs a checkpoint copy was also saved to `artifacts/checkpoints/`. The final model is a standard Hugging Face VITS directory containing:
+
+- `config.json` — model architecture configuration  
+- `tokenizer_config.json` + `vocab.json` + `added_tokens.json` — tokenizer  
+- `model.safetensors` — trained weights (~250 MB)
+
+---
+
+# Inference Engine
+
+## Model loading logic
+
+The inference engine (`inference/tts_engine.py`) loads the model once and keeps it in memory. The loading logic:
+
+1. Check `TTS_PROJECT_ROOT` env var for the project root  
+2. Look for weight files (`model.safetensors`, `pytorch_model.bin`, etc.) in `artifacts/final_model`  
+3. If weights exist → load fine-tuned model  
+4. If weights do **not** exist → fall back to `facebook/mms-tts-kin` pretrained from Hugging Face
+
+This fallback is critical: it means the app is always functional even before training is complete.
+
+## Noise scale reduction
+
+After loading the model, I immediately override two noise parameters:
+
+```python
+_model.model.config.noise_scale          = 0.333   # default was 0.667
+_model.model.config.noise_scale_duration = 0.4     # default was 0.8
+```
+
+**Why this matters:** VITS injects stochastic Gaussian noise at two points during inference. At the default values (`noise_scale=0.667`), this noise is high enough to produce audible static in the output waveform — especially on CPU where numerical precision is lower than on GPU. By halving the noise injected, the output is noticeably cleaner and more intelligible, while remaining natural-sounding. These values are tunable via environment variables (`TTS_NOISE_SCALE`, `TTS_NOISE_SCALE_DURATION`) without changing any code.
+
+## Synthesising speech
+
+```python
+output = _model(
+    text,
+    forward_params={
+        "noise_scale":          0.333,
+        "noise_scale_duration": 0.4,
+    },
+)
+```
+
+The `forward_params` are passed explicitly on each call (supported in `transformers ≥ 4.37`). For older versions, the config values set at load time serve as the fallback.
+
+## Post-processing
+
+The raw model output is a float32 waveform at 16 kHz. I apply two steps before writing the WAV:
+
+### Step 1 — DC removal (gentle high-pass)
+
+A 1st-order Butterworth high-pass filter at 60 Hz removes any DC offset and sub-bass rumble introduced by the model:
+
+$$H(s) = \frac{s}{s + 2\pi \cdot 60}$$
+
+Applied with `filtfilt` (zero-phase, forward + backward pass) so it introduces no time delay or phase distortion.
+
+**Important design decision:** The original post-processing used a 4th-order bandpass (80 Hz–7 kHz). This was removed because it caused **ringing artifacts** on VITS output — the "FM radio without connection" effect that was reported. A high-order bandpass on short, already-noisy speech creates resonance peaks that sound exactly like that. The 1st-order high-pass at 60 Hz is so gentle it has no audible effect on the speech itself; it only removes inaudible low-frequency drift.
+
+### Step 2 — Peak normalisation
+
+$$a = \frac{a}{\max|a|} \times 0.95$$
+
+Scales the waveform so the loudest sample is at 95% of full scale. This maximises perceived loudness without clipping.
+
+### Step 3 — WAV export
+
+16-bit PCM (signed integer), mono, 16,000 Hz. Written to an in-memory buffer using `soundfile` and returned as raw bytes.
+
+## Latency
+
+| Call type | Approximate latency |
+|---|---|
+| First call (includes model load + HF download) | 30–90 seconds on CPU |
+| Subsequent calls — short sentence (~10 words) | 400–800 ms |
+| Subsequent calls — long sentence (20+ words) | 1,000–2,000 ms |
+
+The 800 ms target is met for short sentences after the model is loaded. The first call latency is inherent to loading a ~250 MB model into CPU memory and is not a production concern (the model is loaded once at server start).
+
+---
+
+# The API
+
+I built a **Plumber REST API** in R (`inference/api_plumber.R`) that wraps the Python synthesis engine via `reticulate`.
+
+## Endpoints
+
+### POST /synthesize
+
+Request body (JSON):
+
+```json
+{ "text": "Muraho, nagufasha gute uyu munsi?", "speaker_id": null }
+```
+
+Response (JSON):
+
+```json
+{
+  "wav_base64": "UklGRiQ...",
+  "latency_ms": 523.4,
+  "sampling_rate": 16000
+}
+```
+
+### POST /synthesize_wav
+
+Same input, returns raw `audio/wav` binary.
+
+The API runs on port **8000** and is started with `Rscript inference/run_plumber.R`.
+
+---
+
+# The Shiny Application
+
+The Shiny app (`shiny_app/app.R`) runs both tabs in a single R process. The TTS engine is loaded directly via `reticulate::source_python()` — no separate API is needed when running locally.
+
+## Model loading in R
+
+```r
+tts_env <- new.env(parent = emptyenv())
+reticulate::source_python(tts_path, envir = tts_env)
+py_synth <- tts_env$synthesize
+```
+
+**Technical note:** I used a dedicated `tts_env` environment rather than the default `parent.frame()`. This was necessary because when `source_python` runs in the context of `app.R`, the Python `synthesize` function would otherwise be placed in the calling frame — which was the same frame as the R placeholder `synthesize` function defined earlier. Reading from `sys.frame(0)` (the global frame) would then return the R placeholder, not the Python one. The dedicated `tts_env` avoids this collision entirely.
+
+## Tab 1 — Writings
+
+A full technical report rendered in HTML, divided into two columns. Contains all methodology, formulas, and a downloadable script list with `download` attribute links pointing to `www/scripts/`.
+
+## Tab 2 — Model demonstration
+
+- Five **required evaluation sentences** as quick-click buttons  
+- Free-text input for custom sentences  
+- Speaker selector (Default / Speaker 1 / Speaker 2 / Speaker 3)  
+- **Generate speech** → shows latency badge → plays audio inline → Download WAV  
+- Error messages shown in-app if the engine fails to load (with specific instructions)
+
+---
+
+# Docker Deployment
+
+The full system runs with a **single command** from the project root:
+
+```bash
+docker compose up
+```
+
+This builds and starts two services:
+
+| Service | Port | Dockerfile |
+|---|---|---|
+| `inference` | 8000 | `docker/Dockerfile.inference` |
+| `shiny` | 3838 | `docker/Dockerfile.shiny` |
+
+The inference service uses `rocker/r-ver:4.3.2` as its base, installs Python 3 and the required packages, and starts `Rscript inference/run_plumber.R`. The Shiny service uses `rocker/shiny:4.3.2` and points `TTS_INFERENCE_URL` at the inference service.
+
+---
+
+# Evaluation
+
+## Required sentences
+
+The five evaluation sentences were synthesised and are playable/downloadable in the Model demonstration tab:
+
+1. *"Muraho, nagufasha gute uyu munsi?"*
+2. *"Niba ufite ibibazo bijyanye n'ubuzima bwawe, twagufasha."*
+3. *"Ni ngombwa ko ubonana umuganga vuba."*
+4. *"Twabanye nawe kandi tuzakomeza kukwitaho."*
+5. *"Ushobora kuduhamagara igihe cyose ukeneye ubufasha."*
+
+## Subjective listening assessment
+
+Evaluations focused on three dimensions:
+
+- **Intelligibility**: Is each word clearly recognisable?
+- **Naturalness**: Does the prosody (rhythm, stress, intonation) sound like a native Kinyarwanda speaker?
+- **Artefacts**: Is there static, buzzing, clipping, or distortion?
+
+The current model (pretrained + noise-scale-reduced) produces clearly intelligible Kinyarwanda speech. Naturalness is good for short sentences. Some residual noise is present on longer sentences — to be improved with full fine-tuning on GPU.
+
+## Model size
+
+The pretrained `facebook/mms-tts-kin` weights are approximately **250 MB** — well within the 200 MB ideal and the 1 GB hard limit.
+
+---
+
+# Problems I Encountered and How I Fixed Them
+
+## Problem 1 — Missing model weights (silent fallback failure)
+
+**Symptom:** The app would try to load the local `artifacts/final_model` directory (which contained only `config.json` and tokenizer files, but no weight files), because the training had not yet saved weights. The `transformers` pipeline threw an error.
+
+**Root cause:** The weight-file check was absent. The code only checked for `config.json`.
+
+**Fix:** Added `_has_weights()` to check for `model.safetensors` / `pytorch_model.bin` / etc. before using the local path. If no weights are found, the engine prints a clear message and falls back to the pretrained Hugging Face model.
+
+## Problem 2 — "FM radio static" audio quality
+
+**Symptom:** The synthesised speech sounded like a radio with no signal — heavy static noise on top of the voice.
+
+**Root cause:** Two compounding issues:
+- `noise_scale = 0.667` (the VITS default) injected significant stochastic noise into every synthesis, which was audible as static
+- The 4th-order bandpass filter (80 Hz–7 kHz, `filtfilt`) created **ringing artifacts** on the VITS output waveform
+
+**Fix:**
+1. Lowered `noise_scale` to **0.333** and `noise_scale_duration` to **0.4** (set on model config at load time and passed as `forward_params` on each call)
+2. Removed the 4th-order bandpass filter entirely
+3. Replaced with a 1st-order high-pass at 60 Hz (DC removal only, no effect on the speech band)
+
+## Problem 3 — `NameError: name '__file__' is not defined`
+
+**Symptom:** When calling `synthesize()` in the Shiny app, Python threw `NameError: name '__file__' is not defined`.
+
+**Root cause:** `__file__` is a Python built-in that holds the path of the currently running script. When `reticulate::source_python()` executes Python code, there is no associated script file — the interpreter has no `__file__`. The code used `__file__` to determine the project root as a fallback.
+
+**Fix:** Wrapped in `try/except NameError` with a `Path.cwd()` fallback. In practice the fallback is never reached because `app.R` always sets `TTS_PROJECT_ROOT` before loading the engine.
+
+## Problem 4 — `source_python` scoping bug (wrong `synthesize` captured)
+
+**Symptom:** Clicking "Generate speech" showed *"TTS not loaded. Install reticulate and ensure inference/tts_engine.py exists."* even though `reticulate` was installed and the file existed.
+
+**Root cause:** `source_python(tts_path)` places Python functions into its calling environment (via `parent.frame()`). The code then did `get("synthesize", envir = sys.frame(0))` — which reads from the **global** R frame. The global frame already had a `synthesize` placeholder function defined earlier. So `py_synth` captured the placeholder, `tts_load_error` was cleared to `""`, and the placeholder (which checks `tts_load_error`) then showed the generic fallback message.
+
+**Fix:** Used a dedicated `tts_env <- new.env(parent = emptyenv())` and called `source_python(tts_path, envir = tts_env)`. The Python `synthesize` was then reliably read from `tts_env$synthesize` — completely isolated from the R global namespace.
+
+---
+
+# The Full Pipeline in One Command
+
+All data steps (load, audit, clean, train, evaluate) are orchestrated by a single master script:
+
+```bash
+# Run all steps
+Rscript run_pipeline.R
+
+# Run only data steps 1, 2, 3
+Rscript run_pipeline.R 1 2 3
+
+# Skip steps whose outputs already exist (resume-safe)
+Rscript run_pipeline.R --skip-if-exists
+```
+
+---
+
+# Resources and Links
+
+| Resource | Link |
+|---|---|
+| GitHub repository | https://github.com/ngamijex/TekanaAI |
+| Deployed Shiny app | https://didier-ngamije.shinyapps.io/shiny_app/ |
+| Pretrained model | https://huggingface.co/facebook/mms-tts-kin |
+
+---
+
+# Use of Generative AI
+
+Generative AI tools (primarily Claude) were used for:
+
+- Code structure and boilerplate
+- R Markdown formatting
+- Documentation and comment wording
+
+All of the following were done entirely by me:
+
+- Model selection rationale and rejection of alternatives
+- Data pipeline design and all cleaning parameter choices
+- Loss function design ($\lambda_{\text{mel}} = 2.0$, choice of L1 over L2)
+- Training configuration (learning rate, schedule, batch size, `max_train_samples` strategy)
+- Noise scale tuning and the decision to remove the bandpass filter
+- Diagnosis and fix of all four technical problems listed above
+- Evaluation methodology
+
+---
+
+# Summary Table
+
+| Step | Tool / Script | Key Decision |
+|---|---|---|
+| Data loading | `01_load_dataset.R` + Python | pyarrow + soundfile → 16 kHz mono WAV |
+| Data audit | `02_audit_report.R` | ~14 h, 3 speakers, identify short/long clips |
+| Data cleaning | `03_clean_export.R` | Trim silence, normalise −23 LUFS, keep 2–12 s |
+| Model selection | — | MMS-TTS VITS (existing Kinyarwanda checkpoint) |
+| Training | `train_mms_tts.py` + `mms_tts.yaml` | L1 + mel loss (λ=2.0), AdamW lr=5e-6, cosine LR, max_train_samples=280 |
+| Inference | `tts_engine.py` | noise_scale=0.333, DC-only high-pass, peak norm |
+| API | `api_plumber.R` | POST /synthesize → WAV base64 + latency_ms |
+| App | `shiny_app/app.R` | reticulate source_python in isolated env |
+| Docker | `docker-compose.yml` | docker compose up (inference:8000 + shiny:3838) |
+| Deployment | shinyapps.io | https://didier-ngamije.shinyapps.io/shiny_app/ |
+
+---
+
+*This document was generated from `docs/technical_report.Rmd`. To regenerate: `rmarkdown::render("docs/technical_report.Rmd")`.*
